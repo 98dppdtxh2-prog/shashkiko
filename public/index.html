@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+    <meta charset="UTF-8">
+    <title>ონლაინ შაშკი + ჩატი</title>
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #222; color: #fff; display: flex; flex-direction: column; align-items: center; }
+        .game-container { display: flex; justify-content: center; align-items: flex-start; gap: 30px; margin-top: 20px; }
+        .board { display: grid; grid-template-columns: repeat(8, 60px); grid-template-rows: repeat(8, 60px); border: 4px solid #333; width: 480px; }
+        .cell { width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; position: relative; }
+        .black-cell { background: #555; }
+        .white-cell { background: #eee; }
+        .piece { width: 45px; height: 45px; border-radius: 50%; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 20px; }
+        .red-piece { background: #ff4444; border: 2px solid #b30000; box-shadow: inset 0 0 5px #000; }
+        .black-piece { background: #222; border: 2px solid #000; box-shadow: inset 0 0 5px #fff; }
+        .selected { border: 3px solid #00ff00 !important; }
+        .king::after { content: '👑'; font-size: 16px; }
+        
+        /* ჩატის სტილები */
+        .chat-container { width: 300px; height: 480px; background: #333; border: 4px solid #444; display: flex; flex-direction: column; justify-content: space-between; border-radius: 5px; }
+        .chat-messages { flex-grow: 1; padding: 10px; overflow-y: auto; text-align: left; font-size: 14px; display: flex; flex-direction: column; gap: 5px; }
+        .msg { padding: 5px 8px; border-radius: 4px; max-width: 80%; word-break: break-all; }
+        .msg-red { background: #ff4444; align-self: flex-start; color: white; }
+        .msg-black { background: #111; border: 1px solid #555; align-self: flex-end; color: white; }
+        .chat-input-area { display: flex; border-top: 2px solid #444; }
+        .chat-input { flex-grow: 1; padding: 10px; border: none; background: #222; color: #fff; outline: none; }
+        .chat-btn { padding: 10px 15px; background: #00ff00; color: #000; border: none; cursor: pointer; font-weight: bold; }
+    </style>
+    <script src="/socket.io/socket.io.js"></script>
+</head>
+<body>
+    <h2>შენ ხარ: <span id="symbol">-</span></h2>
+    <h3 id="turn">დაელოდე მეორე მოთამაშეს...</h3>
+
+    <div class="game-container">
+        <div class="board" id="board"></div>
+
+        <div class="chat-container">
+            <div class="chat-messages" id="chatMessages"></div>
+            <div class="chat-input-area">
+                <input type="text" id="chatInput" class="chat-input" placeholder="ჩაწერე მესიჯი..." autocomplete="off">
+                <button id="sendBtn" class="chat-btn">🛩️</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let myColor = ''; 
+        let isMyTurn = false;
+        let selectedPiece = null;
+        let mustContinueJumping = false; 
+
+        let boardState = [
+            [0, 'B', 0, 'B', 0, 'B', 0, 'B'],
+            ['B', 0, 'B', 0, 'B', 0, 'B', 0],
+            [0, 'B', 0, 'B', 0, 'B', 0, 'B'],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0, 0, 0],
+            ['R', 0, 'R', 0, 'R', 0, 'R', 0],
+            [0, 'R', 0, 'R', 0, 'R', 0, 'R'],
+            ['R', 0, 'R', 0, 'R', 0, 'R', 0]
+        ];
+
+        const boardElement = document.getElementById('board');
+        const chatMessages = document.getElementById('chatMessages');
+        const chatInput = document.getElementById('chatInput');
+        const sendBtn = document.getElementById('sendBtn');
+
+        function drawBoard() {
+            boardElement.innerHTML = '';
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    const cell = document.createElement('div');
+                    const isBlackCell = (r + c) % 2 === 1;
+                    cell.classList.add('cell', isBlackCell ? 'black-cell' : 'white-cell');
+                    cell.dataset.row = r;
+                    cell.dataset.col = c;
+
+                    if (isBlackCell && boardState[r][c] !== 0) {
+                        const piece = document.createElement('div');
+                        const type = boardState[r][c];
+                        piece.classList.add('piece', type.includes('R') ? 'red-piece' : 'black-piece');
+                        if (type.includes('K')) piece.classList.add('king');
+                        
+                        if (selectedPiece && selectedPiece.row === r && selectedPiece.col === c) {
+                            piece.classList.add('selected');
+                        }
+
+                        piece.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            handlePieceClick(r, c);
+                        });
+                        cell.appendChild(piece);
+                    }
+
+                    cell.addEventListener('click', () => handleCellClick(r, c));
+                    boardElement.appendChild(cell);
+                }
+            }
+            checkWinner();
+        }
+
+        socket.on('player-assignment', (symbol) => {
+            if (symbol === 'X') {
+                myColor = 'Red';
+                isMyTurn = true;
+                document.getElementById('symbol').innerText = 'წითელი (Red)';
+                document.getElementById('turn').innerText = "შენი სვლაა!";
+            } else if (symbol === 'O') {
+                myColor = 'Black';
+                document.getElementById('symbol').innerText = 'შავი (Black)';
+                document.getElementById('turn').innerText = "ოპონენტის სვლაა...";
+            }
+            drawBoard();
+        });
+
+        function handlePieceClick(r, c) {
+            if (!isMyTurn || mustContinueJumping) return;
+            const pieceColor = boardState[r][c].includes('R') ? 'Red' : 'Black';
+            if (pieceColor !== myColor) return;
+
+            selectedPiece = { row: r, col: c };
+            drawBoard();
+        }
+
+        function handleCellClick(toR, toC) {
+            if (!isMyTurn || !selectedPiece) return;
+            const fromR = selectedPiece.row;
+            const fromC = selectedPiece.col;
+            const piece = boardState[fromR][fromC];
+            const isKing = piece.includes('K');
+
+            const rDiff = toR - fromR;
+            const cDiff = toC - fromC;
+
+            if (boardState[toR][toC] !== 0 || (toR + toC) % 2 === 0) return;
+
+            if (!mustContinueJumping && Math.abs(rDiff) === 1 && Math.abs(cDiff) === 1) {
+                if (!isKing) {
+                    if (myColor === 'Red' && rDiff !== -1) return;
+                    if (myColor === 'Black' && rDiff !== 1) return;
+                }
+                movePiece(fromR, fromC, toR, toC);
+                endTurn();
+                return;
+            }
+
+            if (!mustContinueJumping && isKing && Math.abs(rDiff) === Math.abs(cDiff)) {
+                if (isPathClear(fromR, fromC, toR, toC)) {
+                    movePiece(fromR, fromC, toR, toC);
+                    endTurn();
+                    return;
+                }
+            }
+
+            if (!isKing && Math.abs(rDiff) === 2 && Math.abs(cDiff) === 2) {
+                const midR = fromR + rDiff / 2;
+                const midC = fromC + cDiff / 2;
+                const enemy = boardState[midR][midC];
+                if (enemy !== 0 && !enemy.includes(myColor === 'Red' ? 'R' : 'B')) {
+                    boardState[midR][midC] = 0;
+                    movePiece(fromR, fromC, toR, toC);
+                    checkMultiJump(toR, toC);
+                    return;
+                }
+            }
+
+            if (isKing && Math.abs(rDiff) === Math.abs(cDiff)) {
+                let enemyPos = getEnemyOnPath(fromR, fromC, toR, toC);
+                if (enemyPos) {
+                    boardState[enemyPos.r][enemyPos.c] = 0;
+                    movePiece(fromR, fromC, toR, toC);
+                    checkMultiJump(toR, toC);
+                    return;
+                }
+            }
+        }
+
+        function isPathClear(fR, fC, tR, tC) {
+            let rStep = tR > fR ? 1 : -1;
+            let cStep = tC > fC ? 1 : -1;
+            let r = fR + rStep; let c = fC + cStep;
+            while (r !== tR) {
+                if (boardState[r][c] !== 0) return false;
+                r += rStep; c += cStep;
+            }
+            return true;
+        }
+
+        function getEnemyOnPath(fR, fC, tR, tC) {
+            let rStep = tR > fR ? 1 : -1;
+            let cStep = tC > fC ? 1 : -1;
+            let r = fR + rStep; let c = fC + cStep;
+            let enemyCount = 0; let enemyPos = null;
+            while (r !== tR) {
+                if (boardState[r][c] !== 0) {
+                    if (boardState[r][c].includes(myColor === 'Red' ? 'R' : 'B')) return null;
+                    enemyCount++; enemyPos = { r, c };
+                }
+                r += rStep; c += cStep;
+            }
+            return enemyCount === 1 ? enemyPos : null;
+        }
+
+        function movePiece(fR, fC, tR, tC) {
+            let p = boardState[fR][fC];
+            if (myColor === 'Red' && tR === 0) p = 'RK';
+            if (myColor === 'Black' && tR === 7) p = 'BK';
+            boardState[tR][tC] = p; boardState[fR][fC] = 0;
+        }
+
+        function checkMultiJump(r, c) {
+            let hasMoreJumps = false;
+            for (let dr of [2, -2]) {
+                for (let dc of [2, -2]) {
+                    let toR = r + dr, toC = c + dc;
+                    if (toR >= 0 && toR < 8 && toC >= 0 && toC < 8 && boardState[toR][toC] === 0) {
+                        let midR = r + dr/2, midC = c + dc/2;
+                        let enemy = boardState[midR][midC];
+                        if (enemy !== 0 && !enemy.includes(myColor === 'Red' ? 'R' : 'B')) {
+                            hasMoreJumps = true;
+                        }
+                    }
+                }
+            }
+            if (hasMoreJumps) {
+                mustContinueJumping = true; selectedPiece = { row: r, col: c };
+                document.getElementById('turn').innerText = "მულტი-მკვლელობა! კიდევ უნდა შეჭამო!";
+                drawBoard();
+                socket.emit('make-move', { boardState });
+            } else {
+                endTurn();
+            }
+        }
+
+        function endTurn() {
+            selectedPiece = null; mustContinueJumping = false; isMyTurn = false;
+            document.getElementById('turn').innerText = "ოპონენტის სვლაა...";
+            drawBoard();
+            socket.emit('make-move', { boardState });
+        }
+
+        function checkWinner() {
+            let rCount = 0, bCount = 0;
+            for (let r=0; r<8; r++) {
+                for (let c=0; c<8; c++) {
+                    if (boardState[r][c] !== 0) {
+                        if (boardState[r][c].includes('R')) rCount++;
+                        if (boardState[r][c].includes('B')) bCount++;
+                    }
+                }
+            }
+            if (rCount === 0) { document.getElementById('turn').innerText = "შავებმა მოიგეს! 🏆"; isMyTurn = false; }
+            if (bCount === 0) { document.getElementById('turn').innerText = "წითლებმა მოიგეს! 🏆"; isMyTurn = false; }
+        }
+
+        socket.on('move-made', (data) => {
+            boardState = data.boardState; isMyTurn = true;
+            document.getElementById('turn').innerText = "შენი სვლაა!"; drawBoard();
+        });
+
+        // ჩატის ფუნქციონალი
+        function sendMessage() {
+            const text = chatInput.value.trim();
+            if (!text) return;
+            socket.emit('chat-message', { color: myColor, text });
+            chatInput.value = '';
+        }
+
+        sendBtn.addEventListener('click', sendMessage);
+        chatInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(); });
+
+        socket.on('chat-message', (data) => {
+            const msgDiv = document.createElement('div');
+            msgDiv.classList.add('msg', data.color === 'Red' ? 'msg-red' : 'msg-black');
+            msgDiv.innerText = (data.color === 'Red' ? 'წითელი: ' : 'შავი: ') + data.text;
+            chatMessages.appendChild(msgDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight; // ავტომატური სქროლი ქვემოთ
+        });
+    </script>
+</body>
+</html>
