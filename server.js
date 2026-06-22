@@ -1,41 +1,74 @@
 const express = require('express');
 const http = require('http');
-const { Server } = require('socket.io');
+const socketIo = require('socket.io');
+const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+const io = socketIo(server);
 
-app.use(express.static('public'));
+app.use(express.static(path.join(__dirname, 'public')));
 
-let players = {};
+// ვინახავთ თითოეული ოთახის დაფის მდგომარეობას
+const rooms = {};
+
+// საწყისი დაფის ფუნქცია
+function createInitialBoard() {
+    let board = Array(8).fill(null).map(() => Array(8).fill(null));
+    for (let r = 0; r < 3; r++) {
+        for (let c = 0; c < 8; c++) {
+            if ((r + c) % 2 === 1) board[r][c] = { type: 'b', king: false };
+        }
+    }
+    for (let r = 5; r < 8; r++) {
+        for (let c = 0; c < 8; c++) {
+            if ((r + c) % 2 === 1) board[r][c] = { type: 'w', king: false };
+        }
+    }
+    return board;
+}
 
 io.on('connection', (socket) => {
-    if (!players['X']) {
-        players['X'] = socket.id;
-        socket.emit('player-assignment', 'X');
-    } else if (!players['O']) {
-        players['O'] = socket.id;
-        socket.emit('player-assignment', 'O');
-    } else {
-        socket.emit('player-assignment', 'Spectator');
-    }
+    let currentRoom = null;
 
-    socket.on('make-move', (data) => {
-        socket.broadcast.emit('move-made', data);
+    // ოთახში შესვლა
+    socket.on('joinRoom', (roomId) => {
+        currentRoom = roomId;
+        socket.join(roomId);
+
+        // თუ ოთახი არ არსებობს, ვქმნით ახალ დაფას
+        if (!rooms[roomId]) {
+            rooms[roomId] = {
+                board: createInitialBoard(),
+                turn: 'w'
+            };
+        }
+
+        // ვუგზავნით ახალ მოთამაშეს მიმდინარე დაფის მდგომარეობას
+        socket.emit('initGameState', rooms[roomId]);
     });
 
-    // ჩატის მესიჯების მიღება და ყველასთვის გადაგზავნა
-    socket.on('chat-message', (data) => {
-        io.emit('chat-message', data);
+    // სვლის გაკეთება
+    socket.on('move', (data) => {
+        if (currentRoom && rooms[currentRoom]) {
+            rooms[currentRoom].board = data.board;
+            rooms[currentRoom].turn = data.turn;
+            // ვუგზავნით სვლას მხოლოდ ამავე ოთახის წევრებს
+            socket.to(currentRoom).emit('move', data);
+        }
+    });
+
+    // ჩატის მესიჯი
+    socket.on('chatMessage', (msg) => {
+        if (currentRoom) {
+            socket.to(currentRoom).emit('chatMessage', msg);
+        }
     });
 
     socket.on('disconnect', () => {
-        if (players['X'] === socket.id) delete players['X'];
-        if (players['O'] === socket.id) delete players['O'];
+        // სურვილისამებრ აქ შეიძლება ოთახის გაწმენდის ლოგიკა
     });
 });
 
-server.listen(3000, () => {
-    console.log('Server running on port 3000');
-});
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
