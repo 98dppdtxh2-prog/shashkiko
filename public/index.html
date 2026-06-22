@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>შაშკი ონლაინში (ოთახებით)</title>
+    <title>შაშკი ონლაინში (გადაბმული ჭამებით)</title>
     <style>
         body { font-family: Arial, sans-serif; text-align: center; background-color: #222; color: #fff; margin: 0; padding: 20px; }
         #room-selection { margin-bottom: 20px; }
@@ -32,9 +32,9 @@
     <h1>შაშკი ონლაინში 🎲</h1>
 
     <div id="room-selection">
-        <h3>ჩაწერე ოთახის სახელი ან ნომერი შესასვლელად:</h3>
-        <input type="text" id="room-id" placeholder="მაგ: 123 ან gio">
-        <button onclick="joinRoom()">შესვლა ოთახში</button>
+        <h3>ჩაწერე ოთახის სახელი ან ნომერი:</h3>
+        <input type="text" id="room-id" placeholder="მაგ: 123">
+        <button onclick="joinRoom()">შესვლა</button>
     </div>
 
     <div id="turn-indicator"></div>
@@ -54,16 +54,15 @@
     <script>
         const socket = io();
         let boardState = [];
-        let myColor = null; 
-        let currentTurn = 'w';
+        let currentRoomTurn = 'w';
         let selectedPiece = null;
+        let lockedPiece = null; // ფიგურა, რომელმაც ჭამა უნდა დაასრულოს
         let roomId = "";
 
         function joinRoom() {
             const input = document.getElementById('room-id').value.trim();
-            if(!input) return alert("ჩაწერე რამე ოთახის ნომერი!");
+            if(!input) return alert("ჩაწერე ნომერი!");
             roomId = input;
-            
             socket.emit('joinRoom', roomId);
             document.getElementById('room-selection').style.display = 'none';
             document.getElementById('game-container').style.display = 'flex';
@@ -72,6 +71,17 @@
         socket.on('initGameState', (gameState) => {
             boardState = gameState.board;
             currentRoomTurn = gameState.turn;
+            lockedPiece = null;
+            selectedPiece = null;
+            updateTurnIndicator();
+            renderBoard();
+        });
+
+        socket.on('move', (data) => {
+            boardState = data.board;
+            currentRoomTurn = data.turn;
+            lockedPiece = null;
+            selectedPiece = null;
             updateTurnIndicator();
             renderBoard();
         });
@@ -103,6 +113,9 @@
         }
 
         function selectPiece(r, c) {
+            // თუ ჭამა გვაქვს დასასრულებელი, სხვა ფიგურას ვერ ავირჩევთ
+            if (lockedPiece && (r !== lockedPiece.row || c !== lockedPiece.col)) return;
+            
             const piece = boardState[r][c];
             if (piece && piece.type === currentRoomTurn) {
                 selectedPiece = { row: r, col: c };
@@ -110,10 +123,34 @@
             }
         }
 
+        function hasJump(row, col) {
+            const p = boardState[row][col];
+            if (!p) return false;
+            const dirs = [];
+            if (p.king) {
+                dirs.push([-1,-1], [-1,1], [1,-1], [1,1]);
+            } else {
+                if (p.type === 'w') dirs.push([-1,-1], [-1,1]);
+                if (p.type === 'b') dirs.push([1,-1], [1,1]);
+            }
+            for (let d of dirs) {
+                const mr = row + d[0], mc = col + d[1];
+                const tr = row + d[0]*2, tc = col + d[1]*2;
+                if (tr >= 0 && tr < 8 && tc >= 0 && tc < 8) {
+                    const midP = boardState[mr][mc];
+                    if (midP && midP.type !== p.type && boardState[tr][tc] === null) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
         function movePiece(targetRow, targetCol) {
             if (!selectedPiece) return;
+            if (lockedPiece && (selectedPiece.row !== lockedPiece.row || selectedPiece.col !== lockedPiece.col)) return;
+
             const piece = boardState[selectedPiece.row][selectedPiece.col];
-            
             if ((targetRow + targetCol) % 2 === 0) return;
             if (boardState[targetRow][targetCol] !== null) return;
 
@@ -125,7 +162,7 @@
             let isNormalMove = false;
             let isJumpMove = false;
 
-            if (absRowDiff === 1 && absColDiff === 1) {
+            if (absRowDiff === 1 && absColDiff === 1 && !lockedPiece) {
                 if (piece.king || (piece.type === 'w' && rowDiff === -1) || (piece.type === 'b' && rowDiff === 1)) {
                     isNormalMove = true;
                 }
@@ -148,22 +185,21 @@
                 if (piece.type === 'w' && targetRow === 0) piece.king = true;
                 if (piece.type === 'b' && targetRow === 7) piece.king = true;
 
-                currentRoomTurn = currentRoomTurn === 'w' ? 'b' : 'w';
-                selectedPiece = null;
-
-                renderBoard();
-                updateTurnIndicator();
-
-                socket.emit('move', { board: boardState, turn: currentRoomTurn });
+                if (isJumpMove && hasJump(targetRow, targetCol)) {
+                    lockedPiece = { row: targetRow, col: targetCol };
+                    selectedPiece = lockedPiece;
+                    renderBoard();
+                    socket.emit('move', { board: boardState, turn: currentRoomTurn });
+                } else {
+                    currentRoomTurn = currentRoomTurn === 'w' ? 'b' : 'w';
+                    lockedPiece = null;
+                    selectedPiece = null;
+                    renderBoard();
+                    updateTurnIndicator();
+                    socket.emit('move', { board: boardState, turn: currentRoomTurn });
+                }
             }
         }
-
-        socket.on('move', (data) => {
-            boardState = data.board;
-            currentRoomTurn = data.turn;
-            updateTurnIndicator();
-            renderBoard();
-        });
 
         function updateTurnIndicator() {
             document.getElementById('turn-indicator').innerText = currentRoomTurn === 'w' ? "თეთრების სვლაა ⚪" : "შავების სვლაა ⚫";
@@ -173,7 +209,6 @@
             const input = document.getElementById('chat-input');
             const text = input.value.trim();
             if (!text) return;
-
             appendMessage(`შენ: ${text}`);
             socket.emit('chatMessage', text);
             input.value = '';
